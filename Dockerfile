@@ -9,6 +9,6 @@ FROM ghcr.io/terrapkg/builder:frawhide
 
 COPY . /src
 WORKDIR /src
-RUN pip install --no-build-isolation . && rm -rf /src
+RUN python3 -m pip install --no-build-isolation . && rm -rf /src
 
 ENTRYPOINT ["terra-hatch"]

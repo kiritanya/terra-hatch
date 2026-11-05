@@ -44,4 +44,9 @@ New scratch dirs need a root `anda.hcl` — pass `--init-root` to create it.
 
 ## More languages
 
-Add one row to `LANGUAGES`, one sniffer, one `.spec.j2` template.
+Language support lives in `src/terra_hatch/languages/`, one file per
+language. To add a language:
+
+1. create `languages/<name>.py` with a `ROW`, a `sniff()` and a template
+2. register it in `languages/__init__.py` (the `LANGUAGES` / `SNIFFERS` tables)
+3. drop a `.spec.j2` template into `templates/`

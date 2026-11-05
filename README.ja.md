@@ -45,4 +45,9 @@ anda build -c terra-rawhide-x86_64 anda/<category>/<name>/pkg
 
 ## 新言語
 
-`LANGUAGES` に 1 行、sniffer 1 個、テンプレート 1 枚で足せます。
+言語の設定は `src/terra_hatch/languages/` の中で、言語ごとに 1 ファイルです。
+新言語の追加は:
+
+1. `languages/<なまえ>.py` を作る(`ROW` と `sniff()` があればよい)
+2. `languages/__init__.py` のテーブル(`LANGUAGES` / `SNIFFERS`)に登録
+3. `templates/` に `.spec.j2` を置く

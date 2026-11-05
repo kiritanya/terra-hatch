@@ -2,9 +2,8 @@
 """terra-hatch CLI: write a starter Terra package (anda.hcl, <name>.spec,
 update.rhai).
 
-Language support is data-driven: one row per language in ``LANGUAGES``.
-To add a language, add a row, a sniffer and a template file. No more if-chains
-are needed.
+Language support is data-driven and lives in ``languages.py``. This module
+holds the forge helpers and the main flow.
 """
 
 import argparse
@@ -14,7 +13,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,59 +20,14 @@ from pathlib import Path
 
 from jinja2 import Environment, PackageLoader, StrictUndefined
 
-NAME = "terra-hatch"
-HTTP_UA = "terrapkg-terra-hatch"
-__version__ = "0.1.0"
+from . import HTTP_UA, NAME, __version__
+from .languages import EXTRAS, LANGUAGES, LANG_TIPS, REGISTRY_APIS, sniff_repository
+from .log import die, log, warn
 
 CATEGORIES = [
     "apps", "buildsys", "desktops", "devs", "fonts", "games", "langs", "lib",
     "misc", "multimedia", "system", "terra", "themes", "tools",
 ]
-
-# ---------------------------------------------------------------------------
-# language table — one row per language
-# ---------------------------------------------------------------------------
-LANGUAGES = {
-    "go": {
-        "template": "go",
-        "registry": None,          # no registry-based version tracking
-        "prefix": "",              # spec-Name prefix
-        "extras": None,            # per-template template vars
-    },
-    "rust": {
-        "template": "rust",
-        "registry": "crates",
-        "prefix": "",
-        "extras": None,
-    },
-    "python": {
-        "template": "python",
-        "registry": "pypi",
-        "prefix": "python-",
-        "extras": None,
-    },
-    "generic": {
-        "template": "generic",
-        "registry": None,
-        "prefix": "",
-        "extras": None,
-    },
-}
-
-# sniff order: first detector to return a result wins
-SNIFF_ORDER = ("go", "rust", "python")
-
-# registry APIs for auto-update: name → (url pattern, check field)
-REGISTRY_APIS = {
-    "crates": ("https://crates.io/api/v1/crates/{name}", "crate"),
-    "pypi": ("https://pypi.org/pypi/{name}/json", "info"),
-}
-
-# extra template values per language
-EXTRAS = {
-    "go": lambda source, base: {"gobuild_path": _go_gobuild_path(source)},
-    "python": lambda source, base: python_extras(source, base),
-}
 
 # forge table
 FORGE_HOSTS = {"github": "github.com", "codeberg": "codeberg.org"}
@@ -95,37 +48,9 @@ FORGE_COMMIT_CALLS = {
     "gitlab": "gitlab_commit(\"{host}\", \"{gitlab_id}\", \"main\")",
 }
 
-# per-language review reminder text
-LANG_TIPS = {
-    "go": [
-        "Go: verify %golicenses/%godocs file names and the %gobuild subpath.",
-    ],
-    "rust": [
-        "Rust: check the %autosetup dir name and any Cargo workspace subcrates.",
-        "Rust: dependencies auto-generate `LICENSE.dependencies`; main License: comes from Cargo.toml — check it.",
-    ],    "python": [
-        "Python: confirm the module name in %pyproject_save_files and drop `BuildArch: noarch` if the wheel has compiled extensions.",
-    ],
-    "generic": [
-        "Language not auto-detected — %prep/%build/%install are all TODO.",
-    ],
-}
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-
-
-def log(message):
-    print(f"[{NAME}] {message}")
-
-
-def warn(message):
-    print(f"[{NAME}] WARNING: {message}", file=sys.stderr)
-
-
-def die(message):
-    sys.exit(f"[{NAME}] ERROR: {message}")
 
 
 def fetch_json(url):
@@ -137,197 +62,6 @@ def fetch_json(url):
     except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError):
         return None
 
-
-# ---------------------------------------------------------------------------
-# sniff upstream sources (one function per language; the table sets the order)
-# ---------------------------------------------------------------------------
-
-LICENSE_PATTERNS = ("license", "copyright", "copying", "licence")
-DOC_PATTERNS = ("readme", "authors", "contributors", "news", "changelog")
-
-PYTHON_BUILD_TOOLS = {
-    "setuptools": "python3-setuptools",
-    "wheel": "python3-wheel",
-    "pip": "python3-pip",
-    "installer": "python3-installer",
-    "hatchling": "python3-hatchling",
-    "hatch-vcs": "python3-hatch-vcs",
-    "setuptools-scm": "python3-setuptools-scm",
-    "poetry-core": "python3-poetry-core",
-    "flit-core": "python3-flit-core",
-    "maturin": "maturin",
-}
-
-
-def collect_top_files(src_dir):
-    """List LICENSE*, README* and friends at the top of the repo."""
-    licenses, docs = [], []
-    for entry in sorted(src_dir.iterdir()):
-        if not entry.is_file():
-            continue
-        lower = entry.name.lower()
-        if lower.startswith(LICENSE_PATTERNS):
-            licenses.append(entry.name)
-        elif lower.startswith(DOC_PATTERNS):
-            docs.append(entry.name)
-    return licenses, docs
-
-
-def read_toml(path):
-    try:
-        return tomllib.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except (tomllib.TOMLDecodeError, OSError) as err:
-        warn(f"Could not read {path.name} ({err}); the values become TODO.")
-        return {}
-
-
-def sniff_go(src_dir, repo_name):
-    go_mod = src_dir / "go.mod"
-    if not go_mod.is_file():
-        return None
-    module = None
-    for line in go_mod.read_text(encoding="utf-8", errors="replace").splitlines():
-        if line.strip().startswith("module "):
-            module = line.strip().split(None, 1)[1].split()[0]
-            break
-    if not module:
-        return None
-    return {
-        "lang": "go",
-        "goipath": module,
-        "name": module.rsplit("/", 1)[-1],
-        "main_dir": find_go_main(src_dir),
-    }
-
-
-def find_go_main(src_dir):
-    """Where is the code for the binary? Returns the shallowest directory
-    with a Go `package main` file ('' = repo root, None = not found)."""
-    candidates = []
-    for directory in [src_dir, *src_dir.rglob("*")]:
-        if not directory.is_dir():
-            continue
-        for go_file in directory.glob("*.go"):
-            try:
-                text = go_file.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            if re.search(r"^package\s+main\b", text, re.MULTILINE):
-                candidates.append(directory)
-                break
-    if not candidates:
-        return None
-    if src_dir in candidates:
-        return ""
-    best = min(candidates, key=lambda d: len(d.relative_to(src_dir).parts))
-    return best.relative_to(src_dir).as_posix()
-
-
-def _go_gobuild_path(source):
-    main_dir = source.get("main_dir")
-    return "." if main_dir in ("", None) else f"./{main_dir}"
-
-
-def sniff_rust(src_dir, repo_name):
-    cargo = src_dir / "Cargo.toml"
-    if not cargo.is_file():
-        return None
-    data = read_toml(cargo)
-    package = data.get("package") or {}
-    workspace = data.get("workspace") or {}
-    if not package.get("name") and "workspace" not in data:
-        return None
-    return {
-        "lang": "rust",
-        "name": package.get("name"),
-        "license": package.get("license"),
-        "description": package.get("description") or workspace.get("package", {}).get("description"),
-        "version": package.get("version") or workspace.get("package", {}).get("version"),
-        "url": package.get("homepage") or package.get("repository"),
-        "workspace": "workspace" in data,
-    }
-
-
-def sniff_python(src_dir, repo_name):
-    pyproject = src_dir / "pyproject.toml"
-    if not pyproject.is_file():
-        return None
-    data = read_toml(pyproject)
-    project = data.get("project") or {}
-    if not project.get("name"):
-        return None
-    urls = project.get("urls") or {}
-    license_field = project.get("license")
-    if isinstance(license_field, dict):
-        license_field = license_field.get("text")
-    return {
-        "lang": "python",
-        "name": project["name"],
-        "license": license_field,
-        "description": project.get("description"),
-        "url": urls.get("homepage") or urls.get("repository"),
-        "build_requires": map_python_build_requires(
-            (data.get("build-system") or {}).get("requires") or []),
-    }
-
-
-def sniff_generic(src_dir, repo_name):
-    return {"lang": "generic", "name": repo_name, "url": None}
-
-
-def map_python_build_requires(requires):
-    mapped, unknown = [], []
-    for element in requires:
-        base = re.split(r"[<>=!~;\[\s]", str(element), maxsplit=1)[0].strip().lower()
-        rpm_name = PYTHON_BUILD_TOOLS.get(base)
-        if rpm_name:
-            if rpm_name not in mapped:
-                mapped.append(rpm_name)
-        else:
-            unknown.append(str(element))
-    return {"mapped": mapped, "unknown": unknown}
-
-
-def python_extras(source, base):
-    """Names for the python spec: 
-    - `python-<name>` on the outside to match the RPM name
-    - `_`-joined module name on the inside
-    """
-    mapped = source.get("build_requires", {}).get("mapped", [])
-    unknown = source.get("build_requires", {}).get("unknown", [])
-    comment = ""
-    if unknown:
-        comment = "# TODO: unmapped build-system requires: " + " ".join(unknown)
-    return {
-        "build_requires": " ".join(["python3-devel", *mapped]),
-        "py_unknown_comment": comment,
-        "module": source["name"].replace("-", "_").replace(".", "_"),
-    }
-
-
-SNIFFERS = {
-    "go": sniff_go,
-    "rust": sniff_rust,
-    "python": sniff_python,
-    "generic": sniff_generic,
-}
-
-
-def sniff_repository(src_dir, repo_name):
-    """Find the language and basic facts of the upstream sources."""
-    licenses, docs = collect_top_files(src_dir)
-    for lang in SNIFF_ORDER:
-        info = SNIFFERS[lang](src_dir, repo_name)
-        if info:
-            break
-    else:
-        info = SNIFFERS["generic"](src_dir, repo_name)
-    info.setdefault("license", None)
-    info.setdefault("description", None)
-    info.setdefault("url", None)
-    info["top_licenses"] = licenses
-    info["top_docs"] = docs
-    return info
 
 
 # ---------------------------------------------------------------------------
@@ -631,7 +365,7 @@ def check_registry_call(lang, source, args):
     return registry_update_call(lang, registry_name)
 
 
-def main(argv):
+def main(argv=None):
     args = parse_args(argv)
     git_bin = shutil.which("git")
     if not git_bin:
