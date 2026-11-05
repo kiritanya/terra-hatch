@@ -21,6 +21,7 @@ pip install .
 terra-hatch https://github.com/azat/chdig --category apps   # フォルダ選び
 terra-hatch owner/repo --nightly                            # commit 追跡
 terra-hatch owner/repo --dry-run                            # 書く前に見る
+terra-hatch owner/repo --no-pyp2spec                        # pyp2spec を使わない
 ```
 
 ## 内容
@@ -30,9 +31,12 @@ terra-hatch owner/repo --dry-run                            # 書く前に見る
   packager 設定、`update.rhai` の追跡(`crates()` / `pypi()` 優先)
 - わからない所は `TODO` で残し、最後に確認シートを出す
 
-出力はスタートのテンプレート。TODO を全部埋めて
-[Terra packaging policies](https://docs.terrapkg.com/contributing/policies)
-に従ってから build と PR をしてください。
+python の場合、spec は既定で Fedora の
+[pyp2spec](https://pypi.org/project/pyp2spec/) で作られます
+(入っていたとき、`dnf install pyp2spec`)。ただし PyPI の entry が
+同じ upstream リポジトリに紐づくときだけ使うので、同名の別作品を
+追いかけてしまうことはありません。使えないとき、または
+`--no-pyp2spec` を付けたときは内蔵テンプレートが使われます。
 
 ## Build
 
@@ -45,7 +49,7 @@ anda build -c terra-rawhide-x86_64 anda/<category>/<name>/pkg
 
 ## 新言語
 
-言語の設定は `src/terra_hatch/languages/` の中で、言語ごとに 1 ファイルです。
+言語の設定は `terra_hatch/languages/` の中で、言語ごとに 1 ファイルです。
 新言語の追加は:
 
 1. `languages/<なまえ>.py` を作る(`ROW` と `sniff()` があればよい)

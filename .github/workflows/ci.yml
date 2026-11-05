@@ -19,7 +19,7 @@ jobs:
       - name: Install
         run: pip install .
       - name: Syntax check
-        run: python -m compileall src
+        run: python -m compileall terra_hatch
       - name: Scaffolding smoke tests
         run: |
           set -e

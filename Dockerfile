@@ -9,7 +9,8 @@ FROM ghcr.io/terrapkg/builder:frawhide
 
 COPY . /src
 WORKDIR /src
-RUN dnf install python3-pip -y
+# pyp2spec does the spec for python projects by default
+RUN dnf install python3-pip pyp2spec -y
 RUN python3 -m pip install . && rm -rf /src
 
 ENTRYPOINT ["terra-hatch"]

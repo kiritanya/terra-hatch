@@ -7,14 +7,15 @@ holds the forge helpers and the main flow.
 """
 
 import argparse
+import http.client
 import json
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
-import urllib.error
 import urllib.parse
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -59,7 +60,8 @@ def fetch_json(url):
         request = urllib.request.Request(url, headers={"User-Agent": HTTP_UA})
         with urllib.request.urlopen(request, timeout=15) as response:
             return json.load(response)
-    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, OSError):
+    except (urllib.error.URLError, urllib.error.HTTPError, http.client.HTTPException,
+            ValueError, OSError):
         return None
 
 
@@ -122,17 +124,78 @@ def forge_commit_call(host, forge, owner, repo, gitlab_id):
     return template.format(host=host, owner=owner, repo=repo, gitlab_id=gitlab_id)
 
 
-def registry_update_call(lang, name):
-    """Check crates.io / PyPI for the project. Terra guidelines prefer
-    registry checks over GitHub API calls, so we try these first."""
+def registry_links_to(info, top, match):
+    """Does the registry entry link back to the upstream repo we are
+    packaging? Protects against name collisions on PyPI/crates."""
+    entry = info.get(top) or {}
+    urls = [entry.get("repository"), entry.get("homepage"), entry.get("home_page"),
+            entry.get("docs_url"), entry.get("bugtrack_url")]
+    project_urls = entry.get("project_urls") or {}
+    if isinstance(project_urls, dict):
+        urls.extend(project_urls.values())
+    return any(isinstance(u, str) and match in u for u in urls)
+
+
+def registry_entry_exists(lang, name, match=None):
+    """Check the registry, with the upstream collision check. Returns the
+    info dict, or None."""
     registry = LANGUAGES[lang].get("registry")
     if not registry or not name:
         return None
     url, truthy_field = REGISTRY_APIS[registry]
-    info = fetch_json(url.format(name=name))
-    if isinstance(info, dict) and info.get(truthy_field):
+    info = fetch_json(url.format(name=urllib.parse.quote(name)))
+    if not (isinstance(info, dict) and info.get(truthy_field)):
+        return None
+    if match and not registry_links_to(info, truthy_field, match):
+        warn(f'The {registry} entry "{name}" does not link back to {match}; '
+             "not using it for tracking (it may be a project with the same "
+             "name). Pass --pypi-name/--crate-name if the registry uses "
+             "another name.")
+        return None
+    return info
+
+
+def registry_update_call(lang, name, match=None):
+    """Check crates.io / PyPI for the project. Terra guidelines prefer
+    registry checks over GitHub API calls, so we try these first."""
+    registry = LANGUAGES[lang].get("registry")
+    if registry_entry_exists(lang, name, match):
         return f'{registry}("{name}")'
     return None
+
+
+def run_pyp2spec(pypi_name, packager):
+    """Generate the spec with the Fedora pyp2spec tool. Returns
+    (spec file name, contents), or None on any problem."""
+    tool = shutil.which("pyp2spec")
+    if not tool:
+        warn("pyp2spec is not installed; using the built-in python template. "
+             "`dnf install pyp2spec`.")
+        return None
+    with tempfile.TemporaryDirectory(prefix=f"{NAME}-pyp2spec-") as work:
+        try:
+            result = subprocess.run([tool, pypi_name], cwd=work,
+                                    capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired) as err:
+            warn(f"pyp2spec failed ({err}); using the built-in python template.")
+            return None
+        if result.returncode != 0:
+            warn("pyp2spec failed; using the built-in python template.\n"
+                 + result.stderr.strip())
+            return None
+        spec_files = [p for p in Path(work).glob("*.spec")]
+        if not spec_files:
+            warn("pyp2spec wrote no spec file; using the built-in python template.")
+            return None
+        spec_path = spec_files[0]
+        text = spec_path.read_text(encoding="utf-8", errors="replace")
+        # Terra spec files carry a Packager tag; pyp2spec does not add one
+        if "Packager:" not in text:
+            text = re.sub(r"^(License: .*)$",
+                          lambda m: m.group(1) + "\nPackager:       " + packager,
+                          text, count=1, flags=re.MULTILINE)
+        # pyp2spec names the file `<name>.spec`; the caller adds the suffix
+        return spec_path.name.removesuffix(".spec"), text
 
 
 def forge_license(forge, host, owner, repo, lang):
@@ -148,7 +211,7 @@ def forge_license(forge, host, owner, repo, lang):
     if registry:
         url, top = REGISTRY_APIS[registry]
         info = fetch_json(url.format(name=repo))
-        if isinstance(info, dict):
+        if isinstance(info, dict) and registry_links_to(info, top, f"{host}/{owner}/{repo}"):
             license_value = (info.get(top) or {}).get("license")
             if license_value:
                 return license_value
@@ -324,6 +387,9 @@ def parse_args(argv):
     parser.add_argument("--weekly", metavar="0-6", type=int,
                         help="make a weekly auto-update package; the number is the day 0-6")
     parser.add_argument("--no-update", action="store_true", help="skip update.rhai generation")
+    parser.add_argument("--no-pyp2spec", action="store_true", help="python projects: "
+                        "do not try the Fedora pyp2spec tool, always use the built-in "
+                        "templates")
     parser.add_argument("--pypi-name", help="PyPI project name if it differs from the repo name")
     parser.add_argument("--crate-name", help="crates.io crate name if it differs from the repo name")
     parser.add_argument("--force", action="store_true", help="overwrite files if the target exists")
@@ -338,6 +404,10 @@ def parse_args(argv):
 def review_checklist(source, ctx, args):
     lang = source["lang"]
     tips = []
+    if source.get("legacy_setup_py"):
+        tips.append("Legacy `setup.py` project: check that %pyproject_wheel still works with the setuptools backend.")
+    if ctx.get("by_pyp2spec"):
+        tips.append("Spec generated by pyp2spec — read its own TODO comments (Summary, License, description) too.")
     if "TODO" in ctx["version"]:
         tips.append("`Version:` is a TODO — find the latest release and set it.")
     if "TODO" in ctx["license"]:
@@ -360,9 +430,10 @@ def review_checklist(source, ctx, args):
     return tips
 
 
-def check_registry_call(lang, source, args):
+def check_registry_call(lang, source, args, host, owner, repo):
     registry_name = args.crate_name or args.pypi_name or source["name"]
-    return registry_update_call(lang, registry_name)
+    match = f"{host}/{owner}/{repo}"
+    return registry_update_call(lang, registry_name, match=match)
 
 
 def main(argv=None):
@@ -395,8 +466,9 @@ def main(argv=None):
             log(f"Version tracking: {version_call}")
 
         update_call = version_call
+        registry_call = None
         if lang in ("rust", "python"):
-            registry_call = check_registry_call(lang, source, args)
+            registry_call = check_registry_call(lang, source, args, host, owner, repo)
             if registry_call and registry_call != update_call:
                 log(f"Version tracking: {registry_call} (guidelines prefer registry tracking)")
                 update_call = registry_call
@@ -450,9 +522,30 @@ def main(argv=None):
         }
 
         package_dir = Path(args.root) / args.category / package_name
-        template_name = f"{LANGUAGES[lang]['template']}.spec.j2"
+        # the sniffer may pick a special template (for example setup.py
+        # projects use python-setup instead of the pyproject one)
+        template_key = source.get("template") or LANGUAGES[lang]["template"]
+        template_name = f"{template_key}.spec.j2"
+
+        # python projects: the Fedora pyp2spec tool makes a better spec when
+        # it is available and the PyPI project links back to the same repo.
+        # Otherwise we fall back to the built-in templates.
+        spec_contents = None
+        if not args.no_pyp2spec and lang == "python" and registry_call:
+            if args.dry_run:
+                log("DRY RUN — would generate the spec with pyp2spec")
+            else:
+                spec_variant = run_pyp2spec(args.pypi_name or source["name"], packager)
+                if spec_variant:
+                    spec_name, spec_contents = spec_variant
+                    ctx["spec_name"] = spec_name
+                    ctx["by_pyp2spec"] = True
+                    log(f"Spec generated by pyp2spec: {spec_name}.spec")
+
         files = {
-            package_dir / f"{spec_name}.spec": render(template_name, **template_vars(source, ctx, args)),
+            package_dir / f"{spec_name}.spec": spec_contents
+            if spec_contents is not None
+            else render(template_name, **template_vars(source, ctx, args)),
             package_dir / "anda.hcl": render("anda.hcl.j2", **template_vars(source, ctx, args)),
         }
         if not args.no_update:
