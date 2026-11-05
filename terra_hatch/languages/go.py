@@ -6,6 +6,8 @@ ROW = {
     "template": "go",
     "registry": None,          # no registry-based version tracking
     "prefix": "",              # spec-Name prefix
+    # when this tool is on PATH, ask it for the spec first
+    "tool": "go2rpm",
 }
 
 TIPS = [

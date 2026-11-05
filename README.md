@@ -21,7 +21,7 @@ pip install .
 terra-hatch https://github.com/azat/chdig --category apps   # pick folder
 terra-hatch owner/repo --nightly                            # commit tracking
 terra-hatch owner/repo --dry-run                            # just look
-terra-hatch owner/repo --no-pyp2spec                        # never use pyp2spec
+terra-hatch owner/repo --no-spec-tools                      # pyp2spec / go2rpm を使わない
 ```
 
 ## What it does
@@ -35,12 +35,13 @@ The output is only a template. You must fill every TODO and follow the
 [Terra packaging policies](https://docs.terrapkg.com/contributing/policies)
 before build and PR.
 
-For Python projects, the spec comes from the Fedora
-[pyp2spec](https://pypi.org/project/pyp2spec/) tool by default when it is
-installed (`dnf install pyp2spec`). It is only used when the PyPI project
-links back to the same upstream repo, so a same-named different project
-never gets used. Otherwise — or with `--no-pyp2spec` — the built-in
-templates are used.
+For Python and Go projects, the spec comes from the Fedora tools
+[pyp2spec](https://pypi.org/project/pyp2spec/) and
+[go2rpm](https://pagure.io/go2rpm) by default when they are installed
+(`dnf install pyp2spec go2rpm`). They are only used when the facts check
+out (for example, the PyPI project must link back to the same upstream
+repo, so a same-named different project never gets used). Otherwise —
+or with `--no-spec-tools` — the built-in templates are used.
 
 ## Build
 

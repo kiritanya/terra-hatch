@@ -21,7 +21,7 @@ pip install .
 terra-hatch https://github.com/azat/chdig --category apps   # フォルダ選び
 terra-hatch owner/repo --nightly                            # commit 追跡
 terra-hatch owner/repo --dry-run                            # 書く前に見る
-terra-hatch owner/repo --no-pyp2spec                        # pyp2spec を使わない
+terra-hatch owner/repo --no-spec-tools                      # pyp2spec / go2rpm を使わない
 ```
 
 ## 内容
@@ -36,7 +36,9 @@ python の場合、spec は既定で Fedora の
 (入っていたとき、`dnf install pyp2spec`)。ただし PyPI の entry が
 同じ upstream リポジトリに紐づくときだけ使うので、同名の別作品を
 追いかけてしまうことはありません。使えないとき、または
-`--no-pyp2spec` を付けたときは内蔵テンプレートが使われます。
+`--no-spec-tools` を付けたときは内蔵テンプレートが使われます。
+go の場合も同じ仕組みで [go2rpm](https://pagure.io/go2rpm) を
+既定として使います。
 
 ## Build
 

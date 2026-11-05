@@ -8,6 +8,8 @@ ROW = {
     "template": "python",
     "registry": "pypi",
     "prefix": "python-",
+    # when this tool is on PATH, ask it for the spec first
+    "tool": "pyp2spec",
 }
 
 TIPS = [
