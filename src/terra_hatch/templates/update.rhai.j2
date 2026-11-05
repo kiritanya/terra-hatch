@@ -1,0 +1,18 @@
+{% if nightly %}
+// Nightly commit tracking; see the Terra auto-update docs.
+{% if commit_call %}
+rpm.global("commit", {{ commit_call }});
+if rpm.changed() {
+  rpm.release();
+  rpm.global("commit_date", date());
+}
+{% else %}
+// TODO: pick a commit-tracking AndaX function (see the AndaX docs)
+{% endif %}
+{% else %}
+{% if update_call %}
+rpm.version({{ update_call }});
+{% else %}
+// TODO: pick a version-tracking AndaX function (gh/gh_tag/crates/pypi/... in the AndaX docs)
+{% endif %}
+{% endif %}

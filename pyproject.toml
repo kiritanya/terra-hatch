@@ -1,0 +1,23 @@
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "terra-hatch"
+version = "0.1.0"
+description = "Hatch new Terra packages: scaffold anda.hcl, <name>.spec and update.rhai from upstream sources"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = ["jinja2>=3.0"]
+authors = [{ name = "kiritanya" }]
+keywords = ["rpm", "terrapkg", "anda", "packaging", "scaffold"]
+
+[project.urls]
+Homepage = "https://github.com/kiritanya/terra-hatch"
+
+[project.scripts]
+terra-hatch = "terra_hatch.cli:main"
+
+[tool.flit.module]
+name = "terra_hatch"

@@ -1,0 +1,14 @@
+project pkg {
+  rpm {
+    spec = "{{ spec_name }}.spec"
+  }
+{% if nightly %}
+  labels {
+    nightly = 1
+  }
+{% elif weekly is not none %}
+  labels {
+    weekly = {{ weekly }} # a number between 0~6
+  }
+{% endif %}
+}

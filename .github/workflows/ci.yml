@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: pip install .
+      - name: Syntax check
+        run: python -m compileall src
+      - name: Scaffolding smoke tests
+        run: |
+          set -e
+          out=$(mktemp -d)
+
+          # Go: go.mod detection, gh() tracking, root manifest
+          terra-hatch muesli/duf --root "$out/anda" --category tools \
+            --license MIT --summary 'Disk usage utility' --init-root
+          test -f "$out/anda.hcl"
+          test -f "$out/anda/tools/duf/duf.spec"
+          grep -q 'gh("muesli/duf")' "$out/anda/tools/duf/update.rhai"
+          grep -q '^License:        MIT' "$out/anda/tools/duf/duf.spec"
+          grep -q 'goipath         github.com/muesli/duf' "$out/anda/tools/duf/duf.spec"
+
+          # Python: python- prefix naming + pypi() preferred over gh()
+          terra-hatch tqdm/tqdm --root "$out/anda" --category apps
+          test -f "$out/anda/apps/tqdm/python-tqdm.spec"
+          grep -q 'pypi("tqdm")' "$out/anda/apps/tqdm/update.rhai"
+
+          # Rust: (workspace) skeleton + cargo template
+          terra-hatch chmln/sd --root "$out/anda" --category apps
+          test -f "$out/anda/apps/sd/sd.spec"
+          grep -q '%cargo_prep_online' "$out/anda/apps/sd/sd.spec"
+
+          # Unknown forge (sourcehut) → generic scaffold with TODOs
+          terra-hatch https://git.sr.ht/~kennylevinsen/greetd \
+            --root "$out/anda" --category misc
+          test -f "$out/anda/misc/greetd/greetd.spec"
+          grep -q 'Version:        TODO' "$out/anda/misc/greetd/greetd.spec"
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t terra-hatch:ci .
+      - name: Image entrypoint works
+        run: docker run --rm terra-hatch:ci --help
