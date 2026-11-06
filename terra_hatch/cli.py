@@ -427,8 +427,7 @@ def review_checklist(source, ctx, args):
         tips.append("`License:` came from the forge/registry — check that it is right.")
     if ctx.get("license_aggregated"):
         tips.append("`License:` is the crate+dependency aggregation from `cargo tree` — "
-                    "check it against the licenses the mock build prints "
-                    "(%cargo_license_summary_online at build time).")
+                    "check it before you build.")
     elif lang == "rust" and args.license is None and not shutil.which("cargo"):
         tips.append("Rust: `dnf install cargo` (or run on Fedora) lets terra-hatch "
                     "fill the aggregated dependency-tree `License:` for you.")
