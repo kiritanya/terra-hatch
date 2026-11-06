@@ -16,6 +16,7 @@ Source0:        {{ source_url }}
 {% else %}
 # TODO: Source0 — set the tarball URL of the release tag (unpacked dir: {{ name }}-%{version})
 {% endif %}
+SourceLicense:  {{ source_license }}
 # TODO: remove this when the package builds compiled code (Cython, kivy apps, ...)
 BuildArch:      noarch
 BuildRequires:  python3-devel

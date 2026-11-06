@@ -36,6 +36,7 @@ jobs:
           test -f "$out/anda/tools/duf/duf.spec"
           grep -q 'gh("muesli/duf")' "$out/anda/tools/duf/update.rhai"
           grep -q '^License:        MIT' "$out/anda/tools/duf/duf.spec"
+          grep -q '^SourceLicense:  MIT' "$out/anda/tools/duf/duf.spec"
           grep -q 'goipath         github.com/muesli/duf' "$out/anda/tools/duf/duf.spec"
 
           # Python: python- prefix naming + pypi() preferred over gh()
@@ -48,11 +49,14 @@ jobs:
           test -f "$out/anda/apps/sd/sd.spec"
           grep -q '%cargo_prep_online' "$out/anda/apps/sd/sd.spec"
 
-          # Unknown forge (sourcehut) → generic scaffold with TODOs
+          # Sourcehut: sourcehut() tracking and archive Source0
           echo misc | terra-hatch https://git.sr.ht/~kennylevinsen/greetd \
             --root "$out/anda"
           test -f "$out/anda/misc/greetd/greetd.spec"
-          grep -q 'Version:        TODO' "$out/anda/misc/greetd/greetd.spec"
+          grep -q 'sourcehut("~kennylevinsen/greetd")' "$out/anda/misc/greetd/update.rhai"
+          grep -q 'https://git.sr.ht/~kennylevinsen/greetd/archive/%{version}.tar.gz' \
+            "$out/anda/misc/greetd/greetd.spec"
+          grep -q '^SourceLicense:  GPL-3.0-only' "$out/anda/misc/greetd/greetd.spec"
 
   container:
     runs-on: ubuntu-latest

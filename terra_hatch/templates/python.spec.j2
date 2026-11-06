@@ -13,6 +13,7 @@ Source0:        {{ source_url }}
 {% else %}
 # TODO: Source0 — set the tarball URL of the release tag (unpacked dir: {{ name }}-%{version})
 {% endif %}
+SourceLicense:  {{ source_license }}
 BuildArch:      noarch
 BuildRequires:  {{ build_requires }}
 {{ py_unknown_comment }}

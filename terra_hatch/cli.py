@@ -2,132 +2,37 @@
 """terra-hatch CLI: write a starter Terra package (anda.hcl, <name>.spec,
 update.rhai).
 
-Language support is data-driven and lives in ``languages.py``. This module
-holds the forge helpers and the main flow.
+Language support is data-driven and lives in ``languages.py``. Forge APIs
+live in ``forges.py`` and source-license detection in ``licenses.py``; this
+module holds the main flow.
 """
 
 import argparse
-import http.client
-import json
-import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import urllib.parse
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from jinja2 import Environment, PackageLoader, StrictUndefined
 
-from . import HTTP_UA, NAME, __version__
+from . import NAME, __version__
 from .changelog import block as changelog_block, entry as changelog_entry
+from .forges import fetch_json, forge_for, source_macro, version_from_tag
 from .languages import (EXTRAS, LANGUAGES, LANG_TIPS, LICENSE_HOOKS,
                         REGISTRY_APIS, SPEC_HOOKS, sniff_repository)
+from .licenses import source_license as detect_source_license
 from .log import die, log, warn
 
 # suggested folder per detected language (used only when present in the
 # discovered list); every other language is suggested without a default
 DEFAULT_CATEGORY = {"go": "langs", "rust": "langs", "python": "langs"}
 
-# forge table
-FORGE_HOSTS = {"github": "github.com", "codeberg": "codeberg.org"}
-
-# version-check calls per forge. We fill `{owner}`/`{repo}` later.
-# gitlab is special: it needs a numeric project id (see forge_version()).
-FORGE_VERSION_CALLS = {
-    "github": "gh(\"{owner}/{repo}\")",
-    "codeberg": "codeberg(\"{owner}/{repo}\")",
-}
-FORGE_VERSION_TAG_CALLS = {
-    "github": "gh_tag(\"{owner}/{repo}\")",
-    "codeberg": "codeberg_tag(\"{owner}/{repo}\")",
-}
-FORGE_COMMIT_CALLS = {
-    "github": "gh_commit(\"{owner}/{repo}\")",
-    "codeberg": "codeberg_commit(\"{owner}/{repo}\")",
-    "gitlab": "gitlab_commit(\"{host}\", \"{gitlab_id}\", \"main\")",
-}
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
-
-
-def fetch_json(url):
-    """Get a JSON URL. Returns None on any error (offline, 404, ...)."""
-    try:
-        headers = {"User-Agent": HTTP_UA}
-        token = os.environ.get("GITHUB_TOKEN")
-        if token and "api.github.com" in url:
-            headers["Authorization"] = f"Bearer {token}"
-        request = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(request, timeout=15) as response:
-            return json.load(response)
-    except (urllib.error.URLError, urllib.error.HTTPError, http.client.HTTPException,
-            ValueError, OSError):
-        return None
-
-
-
-# ---------------------------------------------------------------------------
-# forge / registry helpers
-# ---------------------------------------------------------------------------
-
-def detect_forge(netloc):
-    """Which forge is this URL on? Returns None for unknown names."""
-    forge = None
-    for name, host in FORGE_HOSTS.items():
-        if netloc.lower() == host:
-            forge = name
-    if forge is None and "gitlab" in netloc.lower():
-        forge = "gitlab"
-    return forge
-
-
-def fetch_latest(forge, host, owner, repo):
-    """Get the latest release (or tag) from the forge.
-    Returns (tag, rhai version call, gitlab project id). The version call is
-    a full Rhai expression, like `gh("owner/repo")`."""
-    if forge == "gitlab":
-        project_path = urllib.parse.quote(f"{owner}/{repo}", safe="")
-        project = fetch_json(f"https://{host}/api/v4/projects/{project_path}")
-        if isinstance(project, dict) and project.get("id"):
-            project_id = str(project["id"])
-            releases = fetch_json(
-                f"https://{host}/api/v4/projects/{project_id}/releases?per_page=1")
-            if isinstance(releases, list) and releases and releases[0].get("tag_name"):
-                return releases[0]["tag_name"], f"gitlab({project_id})", project_id
-            return None, f"gitlab_tag({project_id})", project_id
-        return None, None, None
-
-    slug = f'"{owner}/{repo}"'
-    if forge == "github":
-        release = fetch_json(f"https://api.github.com/repos/{owner}/{repo}/releases/latest")
-        if isinstance(release, dict) and release.get("tag_name"):
-            return release["tag_name"], FORGE_VERSION_CALLS[forge].format(owner=owner, repo=repo), None
-        tags = fetch_json(f"https://api.github.com/repos/{owner}/{repo}/tags")
-    elif forge == "codeberg":
-        release = fetch_json(f"https://codeberg.org/api/v1/repos/{owner}/{repo}/releases?limit=1")
-        if isinstance(release, list) and release and release[0].get("tag_name"):
-            return release[0]["tag_name"], FORGE_VERSION_CALLS[forge].format(owner=owner, repo=repo), None
-        release = None
-        tags = fetch_json(f"https://codeberg.org/api/v1/repos/{owner}/{repo}/tags")
-    else:
-        return None, None, None
-
-    if isinstance(tags, list) and tags:
-        return tags[0].get("name"), FORGE_VERSION_TAG_CALLS[forge].format(owner=owner, repo=repo), None
-    return None, None, None
-
-
-def forge_commit_call(host, forge, owner, repo, gitlab_id):
-    template = FORGE_COMMIT_CALLS.get(forge)
-    if not template:
-        return None
-    return template.format(host=host, owner=owner, repo=repo, gitlab_id=gitlab_id)
 
 
 def registry_links_to(info, top, match):
@@ -223,62 +128,17 @@ def fetch_spec_from_tool(tool, spec_args):
             spec_path.read_text(encoding="utf-8", errors="replace"), tool
 
 
-def forge_license(forge, host, owner, repo, lang):
-    """Try to get the SPDX license id as it appears in the forge/registry.
-    Facts only: we return None when we cannot check, so no license is made up."""
-    if forge == "github":
-        info = fetch_json(f"https://api.github.com/repos/{owner}/{repo}")
-        if isinstance(info, dict):
-            spdx = (info.get("license") or {}).get("spdx_id")
-            if spdx and spdx not in ("NOASSERTION", "Other"):
-                return spdx
+def registry_license(lang, host, owner, repo):
+    """License fallback from crates.io / PyPI, after the forge itself.
+    Facts only: return None when we cannot check."""
     registry = LANGUAGES[lang].get("registry")
-    if registry:
-        url, top = REGISTRY_APIS[registry]
-        info = fetch_json(url.format(name=repo))
-        if isinstance(info, dict) and registry_links_to(info, top, f"{host}/{owner}/{repo}"):
-            license_value = (info.get(top) or {}).get("license")
-            if license_value:
-                return license_value
-    del host
-    return None
-
-
-def version_from_tag(tag):
-    """Drop the usual `v` prefix from a release tag. Returns None when the
-    tag does not look like a plain version, so we never invent a number."""
-    if not tag:
+    if not registry:
         return None
-    match = re.fullmatch(r"v?(\d+(?:\.\d+)*)[-.]?(\w*)", tag)
-    if not match:
-        return None
-    return match.group(1)
-
-
-def source_macro(tag, version):
-    """Turn a release tag into a `Source0:` pattern like `v%{version}` when
-    we are sure. Otherwise leave a TODO so nothing is invented."""
-    if not tag:
-        return "TODO"
-    if tag == f"v{version}":
-        return "v%{version}"
-    if tag == version:
-        return "%{version}"
-    return None
-
-
-def forge_source_url(forge, upstream, repo, tag):
-    """Tarball URL for a release tag, shaped per forge (github/codeberg/
-    gitlab differ). Returns None when we cannot build one, so the
-    template leaves a TODO."""
-    if not tag:
-        return None
-    if forge == "github":
-        return f"{upstream}/archive/refs/tags/{tag}.tar.gz"
-    if forge == "codeberg":
-        return f"{upstream}/archive/{tag}.tar.gz"
-    if forge == "gitlab":
-        return f"{upstream}/-/archive/{tag}/{repo}-{tag}.tar.gz"
+    url, top = REGISTRY_APIS[registry]
+    info = fetch_json(url.format(name=repo))
+    if isinstance(info, dict) \
+            and registry_links_to(info, top, f"{host}/{owner}/{repo}"):
+        return (info.get(top) or {}).get("license")
     return None
 
 
@@ -412,7 +272,8 @@ def template_vars(source, ctx, args):
         "weekly": args.weekly,
         "quaterdaily": args.quaterdaily,
         "subrepo": args.subrepo,
-        "source_license": source.get("license") or "TODO SPDX-ID",
+        "source_license": source.get("source_license")
+        or source.get("license") or "TODO SPDX-ID",
         "update_call": ctx["update_call"],
         "commit_call": ctx["commit_call"],
         "gitlab_id": ctx["gitlab_id"],
@@ -466,8 +327,9 @@ def guess_today():
 
 
 def parse_url(url):
-    """Read the repo URL and return (url, host, forge, owner, repo).
-    GitHub owner/repo shorthand like `muesli/duf` works too."""
+    """Read the repository URL and return (url, host, forge, owner, repo).
+    `forge` is a Forge object from forges.py. GitHub owner/repo shorthand
+    like `muesli/duf` works too."""
     url = url.strip()
     if "://" not in url and re.fullmatch(r"[\w.-]+/[\w.-]+", url):
         url = f"https://github.com/{url}"
@@ -476,7 +338,7 @@ def parse_url(url):
     if shorthand:
         owner, repo = shorthand.group(1), shorthand.group(2)
         return (f"https://github.com/{owner}/{repo}",
-                "github.com", "github", owner, repo)
+                "github.com", forge_for("github.com"), owner, repo)
     split = urllib.parse.urlsplit(url if "://" in url else f"https://{url}")
     if not split.netloc:
         die(f"Could not parse the repository URL {url!r}.")
@@ -486,7 +348,7 @@ def parse_url(url):
         die(f"Could not find owner/repo in {url!r}.")
     owner, repo = parts[0], parts[1]
     return (f"https://{split.netloc}/{owner}/{repo}",
-            split.netloc, detect_forge(split.netloc), owner, repo)
+            split.netloc, forge_for(split.netloc), owner, repo)
 
 
 def sanitize_name(name):
@@ -572,10 +434,18 @@ def review_checklist(source, ctx, args):
                     "fill the aggregated dependency-tree `License:` for you.")
     if not ctx["packager"]:
         tips.append("`Packager:` — put your own name and email here.")
-    if ctx["source_url"] is None and not ctx.get("by_spec_tool"):
-        tips.append("`Source0:`/`Source:` is a TODO — find the upstream release tag and set the tarball URL.")
-    elif (ctx.get("source_tag") or "TODO") == "TODO":
+    if "TODO" in (source.get("source_license") or "TODO"):
+        tips.append("`SourceLicense:` is a TODO — set the upstream project's own SPDX id.")
+    elif source.get("source_license_origin") == "license-file":
+        guessed = source.get("source_license") or ""
+        hint = ""
+        if re.match(r"(?:A|L)?GPL-", guessed):
+            hint = " (the text alone cannot tell `-only` from `-or-later`)"
+        tips.append(f"`SourceLicense:` was guessed from the LICENSE text — check it{hint}.")
+    if ctx.get("tag") and (ctx.get("source_tag") or "TODO") == "TODO":
         tips.append(f"Upstream tag {ctx.get('tag')!r} is not a plain version; set a `Source0:` URL/pattern that matches it.")
+    elif ctx["source_url"] is None and not ctx.get("by_spec_tool"):
+        tips.append("`Source0:`/`Source:` is a TODO — find the upstream release tag and set the tarball URL.")
     if args.nightly or args.quaterdaily:
         freq = "quaterdaily" if args.quaterdaily else "nightly"
         tips.append(f"{freq.capitalize()} commit tracking: set `Version:` to the "
@@ -617,6 +487,12 @@ def main(argv=None):
             die(f"Cloning {upstream} failed:\n{result.stderr.strip()}")
 
         source = sniff_repository(clone_dir, repo)
+        source_license_value, source_license_origin = detect_source_license(
+            clone_dir, source)
+        source["source_license"] = source_license_value
+        source["source_license_origin"] = source_license_origin
+        if not source.get("license") and source_license_value:
+            source["license"] = source_license_value
         lang = source["lang"]
         log(f"Detected language: {lang}")
 
@@ -628,11 +504,14 @@ def main(argv=None):
         category = ask_category(options, lang)
         log(f"Target folder: {args.root}/{category}")
 
-        tag, version_call, gitlab_id = fetch_latest(forge, host, owner, repo)
-        if forge is None:
+        release = forge.latest(owner, repo)
+        tag = release.tag
+        version_call = release.version_call
+        gitlab_id = release.project_id
+        if forge.name is None:
             warn(f"This forge ({host}) has no auto release check. "
-                 "Version and update.rhai stay TODO. AndaX also has "
-                 "sourcehut/tangled/gitea/forgejo/git_tags helpers.")
+                 "Version and update.rhai stay TODO. Andaman also has "
+                 "tangled/gitea/forgejo/git_tags helpers.")
         elif version_call:
             log(f"Version tracking: {version_call}")
 
@@ -659,7 +538,8 @@ def main(argv=None):
         license_value = args.license or source.get("license")
         license_from_registry = False
         if not license_value:
-            license_value = forge_license(forge, host, owner, repo, lang)
+            license_value = forge.license(owner, repo) \
+                or registry_license(lang, host, owner, repo)
             license_from_registry = license_value is not None
             if license_from_registry:
                 log(f"License auto-detected: {license_value}")
@@ -677,15 +557,21 @@ def main(argv=None):
                 license_aggregated = True
                 log("License: built from the cargo dependency tree")
 
-        summary = args.summary or source.get("description") or "TODO summary"
-        description = source.get("description") or summary
+        forge_summary = None
+        if not args.summary and not source.get("description"):
+            forge_summary = forge.summary(owner, repo)
+            if forge_summary:
+                log(f"Summary from {forge.name}")
+        summary = args.summary or source.get("description") \
+            or forge_summary or "TODO summary"
+        description = source.get("description") or forge_summary or summary
         packager = args.packager or guess_packager(git_bin) or "TODO Your Name <you@example.com>"
 
-        commit_call = forge_commit_call(host, forge, owner, repo,
+        commit_call = forge.commit_call(owner, repo,
                                         gitlab_id or "TODO_PROJECT_ID")
         if not (args.nightly or args.quaterdaily):
             commit_call = None
-        source_url = forge_source_url(forge, upstream, repo, tag)
+        source_url = forge.source_url(upstream, repo, source_tag)
         if source_url:
             log(f"Source0 URL: {source_url}")
         today = guess_today()
@@ -694,7 +580,7 @@ def main(argv=None):
             "spec_name": spec_name,
             "upstream": upstream,
             "host": host,
-            "forge": forge,
+            "forge": forge.name,
             "owner": owner,
             "repo": repo,
             "version": version,
