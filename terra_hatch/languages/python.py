@@ -1,6 +1,8 @@
 """Python: detected by a root `pyproject.toml` with a `[project]` name."""
 
 import re
+import shutil
+import subprocess
 
 from .files import read_toml
 
@@ -121,3 +123,92 @@ def extras(source, base):
         "py_unknown_comment": comment,
         "module": source["name"].replace("-", "_").replace(".", "_"),
     }
+
+
+SPEC_SECTION = (r"%(?:prep|build|install|check|files|changelog|description|"
+                r"package|generate_buildrequires|clean|postun|post|preun|pre|"
+                r"trigger|conf|verifyscript|transfiletrigger)\b")
+GENERATE_BUILDREQUIRES = re.compile(
+    rf"^%generate_buildrequires[ \t]*\n(.*?)(?=^{SPEC_SECTION}|\Z)",
+    re.M | re.S)
+
+BUILDREQUIRES_TODO = ("# TODO: BuildRequires — run %pyproject_buildrequires on a "
+                      "Fedora host and list the python3dist(...) results here")
+
+
+def resolve_buildrequires(text, src_dir):
+    """Terra specs do not use %generate_buildrequires. Run the section's
+    commands (pyp2spec writes `%pyproject_buildrequires ...`) against the
+    sources instead, turn the printed `python3dist(...)` lines into
+    BuildRequires and drop the section. Returns (text, requirements or
+    None); None means the macros/rpm were unavailable, so a TODO is left."""
+    match = GENERATE_BUILDREQUIRES.search(text)
+    if not match:
+        return text, None
+    requirements = _run_requirements(match.group(1), src_dir)
+    replacement = "" if requirements else BUILDREQUIRES_TODO + "\n"
+    text = text[:match.start()] + replacement + text[match.end():]
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    if requirements:
+        text = _insert_buildrequires(text, requirements)
+    return text, requirements
+
+
+def _run_requirements(body, src_dir):
+    """Expand the section's commands with rpm, run them in the sources and
+    keep the python3dist lines they print. None on any problem or when the
+    pyproject macros are not installed (Fedora ships a stub that only
+    echoes the package name)."""
+    rpm = shutil.which("rpm")
+    if not rpm or not src_dir:
+        return None
+    script_lines = []
+    for line in body.splitlines():
+        command = line.strip()
+        if not command or command.startswith("#"):
+            continue
+        try:
+            expanded = subprocess.run([rpm, "--eval", command],
+                                      capture_output=True, text=True,
+                                      timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        output = expanded.stdout.strip()
+        if expanded.returncode != 0 or not output \
+                or "%pyproject_buildrequires" in output:
+            return None
+        script_lines.append(output)
+    script = "\n".join(script_lines)
+    if not script:
+        return None
+    try:
+        result = subprocess.run(["bash", "-euo", "pipefail", "-c", script],
+                                cwd=src_dir, capture_output=True, text=True,
+                                timeout=300)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    requirements = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if "dist(" in line or line.startswith("python3-"):
+            requirements.append(line)
+    return sorted(set(requirements)) or None
+
+
+def _insert_buildrequires(text, requirements):
+    """Append the resolved requirements to the BuildRequires block (or
+    after Source when the spec has none yet), skipping duplicates."""
+    existing = set(re.findall(r"^BuildRequires:\s*(.+)$", text, re.M))
+    lines = [f"BuildRequires:  {req}" for req in requirements
+             if req not in existing]
+    if not lines:
+        return text
+    block = "\n".join(lines)
+    if re.search(r"^BuildRequires:", text, re.M):
+        return re.sub(r"^(BuildRequires:.*(?:\nBuildRequires:.*)*)$",
+                      lambda m: m.group(1) + "\n" + block,
+                      text, count=1, flags=re.M)
+    return re.sub(r"^(Source:.*)$", lambda m: m.group(1) + "\n" + block,
+                  text, count=1, flags=re.M)

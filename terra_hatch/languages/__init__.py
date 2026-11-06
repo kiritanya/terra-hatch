@@ -39,6 +39,13 @@ LICENSE_HOOKS = {
     "rust": rust.license_expression,
 }
 
+# per-language fixes for specs made by the Fedora tools: fn(spec, sources
+# dir) -> (spec, extra info); used to drop %generate_buildrequires and
+# resolve its contents into BuildRequires
+SPEC_HOOKS = {
+    "python": python.resolve_buildrequires,
+}
+
 # per-language review reminder text; languages without tips are absent
 LANG_TIPS = {
     "go": go.TIPS,
