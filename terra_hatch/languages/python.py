@@ -3,6 +3,7 @@
 import re
 import shutil
 import subprocess
+import tempfile
 
 from .files import read_toml
 
@@ -162,39 +163,41 @@ def _run_requirements(body, src_dir):
     rpm = shutil.which("rpm")
     if not rpm or not src_dir:
         return None
-    script_lines = []
-    for line in body.splitlines():
-        command = line.strip()
-        if not command or command.startswith("#"):
-            continue
+    # `%pyproject_buildrequires` writes its result under %_builddir. Give it a
+    # temporary one so a hatch never litters the user's ~/rpmbuild.
+    with tempfile.TemporaryDirectory(prefix="terra-hatch-build-") as builddir:
+        script_lines = []
+        for line in body.splitlines():
+            command = line.strip()
+            if not command or command.startswith("#"):
+                continue
+            try:
+                expanded = subprocess.run(
+                    [rpm, "--define", f"_builddir {builddir}", "--eval", command],
+                    capture_output=True, text=True, timeout=60)
+            except (OSError, subprocess.TimeoutExpired):
+                return None
+            output = expanded.stdout.strip()
+            if expanded.returncode != 0 or not output:
+                return None
+            script_lines.append(output)
+        script = "\n".join(script_lines)
+        if not script:
+            return None
         try:
-            expanded = subprocess.run([rpm, "--eval", command],
-                                      capture_output=True, text=True,
-                                      timeout=60)
+            result = subprocess.run(["bash", "-euo", "pipefail", "-c", script],
+                                    cwd=src_dir, capture_output=True, text=True,
+                                    timeout=300)
         except (OSError, subprocess.TimeoutExpired):
             return None
-        output = expanded.stdout.strip()
-        if expanded.returncode != 0 or not output \
-                or "%pyproject_buildrequires" in output:
+        if result.returncode != 0:
             return None
-        script_lines.append(output)
-    script = "\n".join(script_lines)
-    if not script:
-        return None
-    try:
-        result = subprocess.run(["bash", "-euo", "pipefail", "-c", script],
-                                cwd=src_dir, capture_output=True, text=True,
-                                timeout=300)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    requirements = []
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if "dist(" in line or line.startswith("python3-"):
-            requirements.append(line)
-    return sorted(set(requirements)) or None
+        requirements = []
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if "dist(" in line or line.startswith("python3-"):
+                requirements.append(line)
+        return sorted(set(requirements)) or None
 
 
 def _insert_buildrequires(text, requirements):

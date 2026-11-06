@@ -39,6 +39,4 @@ install -Dm755 target/rpm/{{ name }} %{buildroot}%{_bindir}/{{ name }}
 %license LICENSE.dependencies
 %{_bindir}/{{ name }}
 
-%changelog
-* {{ today }} {{ packager }}
-- initial package
+{{ changelog }}

@@ -23,6 +23,7 @@ from pathlib import Path
 from jinja2 import Environment, PackageLoader, StrictUndefined
 
 from . import HTTP_UA, NAME, __version__
+from .changelog import block as changelog_block, entry as changelog_entry
 from .languages import (EXTRAS, LANGUAGES, LANG_TIPS, LICENSE_HOOKS,
                         REGISTRY_APIS, SPEC_HOOKS, sniff_repository)
 from .log import die, log, warn
@@ -179,17 +180,18 @@ def insert_packager(text, packager):
                   text, count=1, flags=re.MULTILINE)
 
 
-def terraify_spec(text, packager, today):
+def terraify_spec(text, packager, today, version):
     """Small edits the Terra policies require but the Fedora spec tools
     (pyp2spec / go2rpm) do not make: the `Packager:` tag, a manual
     `Release: 1%{?dist}` instead of `%autorelease`, and a hand-written
-    `%changelog` entry instead of `%autochangelog`."""
+    `%changelog` entry (with the version) instead of `%autochangelog`."""
     text = re.sub(r"^(Release:\s+)%autorelease\s*$", r"\g<1>1%{?dist}",
                   text, count=1, flags=re.MULTILINE)
     text = insert_packager(text, packager)
-    return re.sub(r"^%autochangelog\s*$",
-                  f"* {today} {packager}\n- initial package",
+    text = re.sub(r"^%autochangelog\s*$",
+                  lambda _: changelog_entry(today, packager, version),
                   text, count=1, flags=re.MULTILINE)
+    return text if text.endswith("\n") else text + "\n"
 
 
 def fetch_spec_from_tool(tool, spec_args):
@@ -686,6 +688,7 @@ def main(argv=None):
         source_url = forge_source_url(forge, upstream, repo, tag)
         if source_url:
             log(f"Source0 URL: {source_url}")
+        today = guess_today()
         ctx = {
             "name": package_name,
             "spec_name": spec_name,
@@ -704,7 +707,8 @@ def main(argv=None):
             "summary": summary,
             "description": description,
             "packager": packager,
-            "today": guess_today(),
+            "changelog": changelog_block(today, packager, version),
+            "today": today,
             "update_call": update_call,
             "commit_call": commit_call,
             "gitlab_id": gitlab_id or "TODO_PROJECT_ID",
@@ -731,7 +735,8 @@ def main(argv=None):
                                                 [args.pypi_name or source["name"]])
         if delegate:
             spec_name, spec_contents, used_tool = delegate
-            spec_contents = terraify_spec(spec_contents, packager, ctx["today"])
+            spec_contents = terraify_spec(spec_contents, packager,
+                                          ctx["today"], version)
             spec_hook = SPEC_HOOKS.get(lang)
             if spec_hook:
                 spec_contents, resolved = spec_hook(spec_contents, clone_dir)
