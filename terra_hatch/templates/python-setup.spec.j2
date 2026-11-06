@@ -11,7 +11,11 @@ Release:        1%{?dist}
 Summary:        {{ summary }}
 License:        {{ license }}
 URL:            {{ url }}
-Source0:        %url/archive/refs/tags/{{ source_tag }}.tar.gz
+{% if source_url %}
+Source0:        {{ source_url }}
+{% else %}
+# TODO: Source0 — set the tarball URL of the release tag (unpacked dir: {{ name }}-%{version})
+{% endif %}
 # TODO: remove this when the package builds compiled code (Cython, kivy apps, ...)
 BuildArch:      noarch
 BuildRequires:  python3-devel

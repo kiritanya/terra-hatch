@@ -5,7 +5,11 @@ Release:        1%{?dist}
 Summary:        {{ summary }}
 License:        {{ license }}
 URL:            {{ url }}
-Source0:        %url/archive/refs/tags/{{ source_tag }}.tar.gz
+{% if source_url %}
+Source0:        {{ source_url }}
+{% else %}
+# TODO: Source0 — set the tarball URL of the release tag (unpacked dir: {{ unpack_dir }})
+{% endif %}
 # TODO: BuildRequires — what does this project need to build?
 
 Packager:       {{ packager }}

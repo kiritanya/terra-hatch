@@ -24,9 +24,11 @@ jobs:
         run: |
           set -e
           out=$(mktemp -d)
+          # a packages-checkout shape: the folder menu comes from this tree
+          mkdir -p "$out/anda/tools" "$out/anda/apps" "$out/anda/misc"
 
           # Go: go.mod detection, gh() tracking, root manifest
-          terra-hatch muesli/duf --root "$out/anda" --category tools \
+          echo tools | terra-hatch muesli/duf --root "$out/anda" \
             --license MIT --summary 'Disk usage utility' --init-root
           test -f "$out/anda.hcl"
           test -f "$out/anda/tools/duf/duf.spec"
@@ -35,18 +37,18 @@ jobs:
           grep -q 'goipath         github.com/muesli/duf' "$out/anda/tools/duf/duf.spec"
 
           # Python: python- prefix naming + pypi() preferred over gh()
-          terra-hatch tqdm/tqdm --root "$out/anda" --category apps
+          echo apps | terra-hatch tqdm/tqdm --root "$out/anda"
           test -f "$out/anda/apps/tqdm/python-tqdm.spec"
           grep -q 'pypi("tqdm")' "$out/anda/apps/tqdm/update.rhai"
 
           # Rust: (workspace) skeleton + cargo template
-          terra-hatch chmln/sd --root "$out/anda" --category apps
+          echo apps | terra-hatch chmln/sd --root "$out/anda"
           test -f "$out/anda/apps/sd/sd.spec"
           grep -q '%cargo_prep_online' "$out/anda/apps/sd/sd.spec"
 
           # Unknown forge (sourcehut) → generic scaffold with TODOs
-          terra-hatch https://git.sr.ht/~kennylevinsen/greetd \
-            --root "$out/anda" --category misc
+          echo misc | terra-hatch https://git.sr.ht/~kennylevinsen/greetd \
+            --root "$out/anda"
           test -f "$out/anda/misc/greetd/greetd.spec"
           grep -q 'Version:        TODO' "$out/anda/misc/greetd/greetd.spec"
 

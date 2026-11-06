@@ -6,9 +6,18 @@ project pkg {
   labels {
     nightly = 1
   }
+{% elif quaterdaily %}
+  labels {
+    quaterdaily = 1
+  }
 {% elif weekly is not none %}
   labels {
     weekly = {{ weekly }} # a number between 0~6
+  }
+{% endif %}
+{% if subrepo %}
+  labels {
+    subrepo = "{{ subrepo }}"
   }
 {% endif %}
 }

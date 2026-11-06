@@ -25,10 +25,9 @@ from . import HTTP_UA, NAME, __version__
 from .languages import EXTRAS, LANGUAGES, LANG_TIPS, REGISTRY_APIS, sniff_repository
 from .log import die, log, warn
 
-CATEGORIES = [
-    "apps", "buildsys", "desktops", "devs", "fonts", "games", "langs", "lib",
-    "misc", "multimedia", "system", "terra", "themes", "tools",
-]
+# suggested folder per detected language (used only when present in the
+# discovered list); every other language is suggested without a default
+DEFAULT_CATEGORY = {"go": "langs", "rust": "langs", "python": "langs"}
 
 # forge table
 FORGE_HOSTS = {"github": "github.com", "codeberg": "codeberg.org"}
@@ -247,6 +246,21 @@ def source_macro(tag, version):
     return None
 
 
+def forge_source_url(forge, upstream, repo, tag):
+    """Tarball URL for a release tag, shaped per forge (github/codeberg/
+    gitlab differ). Returns None when we cannot build one, so the
+    template leaves a TODO."""
+    if not tag:
+        return None
+    if forge == "github":
+        return f"{upstream}/archive/refs/tags/{tag}.tar.gz"
+    if forge == "codeberg":
+        return f"{upstream}/archive/{tag}.tar.gz"
+    if forge == "gitlab":
+        return f"{upstream}/-/archive/{tag}/{repo}-{tag}.tar.gz"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # rendering
 # ---------------------------------------------------------------------------
@@ -262,6 +276,57 @@ env = Environment(
 
 def render(template_name, **variables):
     return env.get_template(template_name).render(**variables)
+
+
+def discover_categories(root):
+    """Find the folder options to offer: the subfolders of the working
+    `--root` directory (your packages checkout, e.g. terrapkg's packages
+    repo or a tuatara one), one level deep — this is also how
+    desktops/stardust-style subfolders show up. Returns a list of
+    (name, path) pairs, or None when the folder holds nothing."""
+    root_dir = Path(root)
+    options = []
+    if root_dir.is_dir():
+        for entry in sorted(root_dir.iterdir()):
+            if not entry.is_dir() or entry.name.startswith("."):
+                continue
+            options.append((entry.name, entry.name))
+            for sub in sorted(entry.iterdir()):
+                if sub.is_dir() and not sub.name.startswith("."):
+                    options.append((sub.name, f"{entry.name}/{sub.name}"))
+    return options or None
+
+
+def ask_category(options, lang):
+    """Ask which Anda folder the package goes in. The (name, path) options
+    come from discover_categories(). A piped stdin also works (one choice)."""
+    default = DEFAULT_CATEGORY.get(lang)
+    if default and default not in {name for name, _ in options}:
+        default = None
+    print("Which Anda folder does this package go in?")
+    for index, (name, path) in enumerate(options, 1):
+        line = f"{index:>4}) {name}" + (f"  ({path})" if path != name else "")
+        if name == default:
+            line += " — default"
+        print(line)
+    hint = f", Enter = {default}" if default else ""
+    while True:
+        try:
+            answer = input(f"Folder number or name{hint}: ")
+        except (EOFError, OSError):
+            die("No category choice (stdin closed). Run terra-hatch in a "
+                "terminal or pipe one choice: `echo apps | terra-hatch ...`")
+        answer = answer.strip().lower()
+        if not answer and default:
+            for name, path in options:
+                if name == default:
+                    return path
+        if answer.isdigit() and 1 <= int(answer) <= len(options):
+            return options[int(answer) - 1][1]
+        for name, path in options:
+            if answer in (name, path):
+                return path
+        print(f"Unknown folder {answer!r}; pick one from the list.")
 
 
 def spec_name_of(lang, package_name, category):
@@ -287,6 +352,9 @@ def template_vars(source, ctx, args):
         "url": ctx["upstream"],
         "nightly": args.nightly,
         "weekly": args.weekly,
+        "quaterdaily": args.quaterdaily,
+        "subrepo": args.subrepo,
+        "source_license": source.get("license") or "TODO SPDX-ID",
         "update_call": ctx["update_call"],
         "commit_call": ctx["commit_call"],
         "gitlab_id": ctx["gitlab_id"],
@@ -379,8 +447,6 @@ def parse_args(argv):
                         help="upstream repository URL (GitHub owner/repo shorthand works too)")
     parser.add_argument("--root", metavar="DIR", default="anda",
                         help="directory holding the Anda category folders (default: anda)")
-    parser.add_argument("--category", choices=CATEGORIES, default="misc",
-                        help=f"target Anda category (default: misc; choices: {', '.join(CATEGORIES)})")
     parser.add_argument("--name", help="RPM package name (default: from upstream metadata or repo name)")
     parser.add_argument("--license", help="override the license detected upstream")
     parser.add_argument("--summary", help="override the summary detected upstream")
@@ -391,6 +457,14 @@ def parse_args(argv):
                         help="make a nightly package (update.rhai tracks commits)")
     parser.add_argument("--weekly", metavar="0-6", type=int,
                         help="make a weekly auto-update package; the number is the day 0-6")
+    parser.add_argument("--quaterdaily", action="store_true",
+                        help="make a quaterdaily auto-update package "
+                             "(updated every 6 hours; the spec needs the "
+                             "quaterdaily version macros)")
+    parser.add_argument("--subrepo",
+                        choices=["extras", "nvidia", "mesa", "multimedia"],
+                        help="add the `subrepo` label to anda.hcl (for packages "
+                             "that must ship in a Terra subrepo)")
     parser.add_argument("--no-update", action="store_true", help="skip update.rhai generation")
     parser.add_argument("--no-spec-tools", "--no-pyp2spec", dest="no_spec_tools",
                         action="store_true", help="never delegate the spec to the "
@@ -414,6 +488,10 @@ def review_checklist(source, ctx, args):
     if ctx.get("by_spec_tool"):
         tips.append(f'Spec generated by {ctx["by_spec_tool"]} — read its own '
                     "review comments (License FIXME, summary, description) too.")
+    if ctx.get("by_spec_tool") and lang == "go":
+        tips.append("go2rpm naming: rename the package (spec file and `Name:`) "
+                    "to a sensible short name; you MAY keep the long go2rpm "
+                    "name in `Provides:` (Terra Go guidelines).")
     if "TODO" in ctx["version"]:
         tips.append("`Version:` is a TODO — find the latest release and set it.")
     if "TODO" in ctx["license"]:
@@ -423,8 +501,16 @@ def review_checklist(source, ctx, args):
         tips.append("`License:` came from the forge/registry — check that it is right.")
     if not ctx["packager"]:
         tips.append("`Packager:` — put your own name and email here.")
-    if (ctx.get("source_tag") or "TODO") == "TODO":
-        tips.append("`Source0:`/`Source:` tag name is a TODO — check upstream tags.")
+    if ctx["source_url"] is None and not ctx.get("by_spec_tool"):
+        tips.append("`Source0:`/`Source:` is a TODO — find the upstream release tag and set the tarball URL.")
+    elif (ctx.get("source_tag") or "TODO") == "TODO":
+        tips.append(f"Upstream tag {ctx.get('tag')!r} is not a plain version; set a `Source0:` URL/pattern that matches it.")
+    if args.nightly or args.quaterdaily:
+        freq = "quaterdaily" if args.quaterdaily else "nightly"
+        tips.append(f"{freq.capitalize()} commit tracking: set `Version:` to the "
+                    "commit-tracking format from the Terra policies (for example "
+                    "`%{unreleased_version}~%{commit_date}git.%{shortcommit}`) and "
+                    "define the matching macros in the spec.")
     tips.extend(LANG_TIPS.get(lang, []))
     if source.get("workspace"):
         tips.append("This is a Cargo workspace — pick the subcrate you want; the spec still points at the repo root.")
@@ -463,6 +549,14 @@ def main(argv=None):
         lang = source["lang"]
         log(f"Detected language: {lang}")
 
+        options = discover_categories(args.root)
+        if options is None:
+            die(f"{args.root}/ holds no category folders. Run terra-hatch "
+                "inside your packages checkout (the folder with apps/, "
+                "tools/, ...) so terra-hatch can offer the real folders.")
+        category = ask_category(options, lang)
+        log(f"Target folder: {args.root}/{category}")
+
         tag, version_call, gitlab_id = fetch_latest(forge, host, owner, repo)
         if forge is None:
             warn(f"This forge ({host}) has no auto release check. "
@@ -480,7 +574,7 @@ def main(argv=None):
                 update_call = registry_call
 
         package_name = sanitize_name(args.name or source["name"] or repo.lower())
-        spec_name = spec_name_of(lang, package_name, args.category)
+        spec_name = spec_name_of(lang, package_name, category)
 
         version = args.version or version_from_tag(tag) or "TODO"
         if version == "TODO":
@@ -504,7 +598,12 @@ def main(argv=None):
         packager = args.packager or guess_packager(git_bin) or "TODO Your Name <you@example.com>"
 
         commit_call = forge_commit_call(host, forge, owner, repo,
-                                        gitlab_id or "TODO_PROJECT_ID") if args.nightly else None
+                                        gitlab_id or "TODO_PROJECT_ID")
+        if not (args.nightly or args.quaterdaily):
+            commit_call = None
+        source_url = forge_source_url(forge, upstream, repo, tag)
+        if source_url:
+            log(f"Source0 URL: {source_url}")
         ctx = {
             "name": package_name,
             "spec_name": spec_name,
@@ -516,6 +615,7 @@ def main(argv=None):
             "version": version,
             "tag": tag,
             "source_tag": source_tag,
+            "source_url": source_url,
             "license": license_value,
             "license_from_registry": license_from_registry,
             "summary": summary,
@@ -527,7 +627,7 @@ def main(argv=None):
             "gitlab_id": gitlab_id or "TODO_PROJECT_ID",
         }
 
-        package_dir = Path(args.root) / args.category / package_name
+        package_dir = Path(args.root) / category / package_name
         # the sniffer may pick a special template (for example setup.py
         # projects use python-setup instead of the pyproject one)
         template_key = source.get("template") or LANGUAGES[lang]["template"]
@@ -582,7 +682,7 @@ def main(argv=None):
         print("\nReview checklist (check every TODO yourself):")
         for tip in review_checklist(source, ctx, args):
             print(f"  - {tip}")
-        print(f"  - Build: anda build -c terra-rawhide-x86_64 anda/{args.category}/{package_name}/pkg")
+        print(f"  - Build: anda build -c terra-rawhide-x86_64 {args.root}/{category}/{package_name}/pkg")
         print("  - These files are only a start template. Review them; the Terra "
               "packaging policies apply to anything you submit.")
         return 0

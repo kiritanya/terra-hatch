@@ -1,10 +1,13 @@
-{% if nightly %}
-// Nightly commit tracking; see the Terra auto-update docs.
+{% if nightly or quaterdaily %}
+// Commit tracking; see the Terra auto-update docs.
 {% if commit_call %}
 rpm.global("commit", {{ commit_call }});
 if rpm.changed() {
   rpm.release();
   rpm.global("commit_date", date());
+{% if quaterdaily %}
+  rpm.global("run", quaterdaily_run());
+{% endif %}
 }
 {% else %}
 // TODO: pick a commit-tracking AndaX function (see the AndaX docs)

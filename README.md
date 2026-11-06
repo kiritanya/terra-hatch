@@ -18,11 +18,18 @@ pip install .
 ## Use
 
 ```sh
-terra-hatch https://github.com/azat/chdig --category apps   # pick folder
-terra-hatch owner/repo --nightly                            # commit tracking
-terra-hatch owner/repo --dry-run                            # just look
-terra-hatch owner/repo --no-spec-tools                      # pyp2spec / go2rpm を使わない
+cd <your packages repo>   # the folder with the anda/ category folders
+terra-hatch https://github.com/azat/chdig   # the folder is picked interactively
+echo apps | terra-hatch owner/repo          # pipe a choice instead of the prompt
+terra-hatch owner/repo --nightly            # commit tracking
+terra-hatch owner/repo --dry-run            # just look
+terra-hatch owner/repo --no-spec-tools      # skip pyp2spec / go2rpm
 ```
+
+The folder menu is discovered from the working `--root` directory
+(default `anda`), so any checkout works — terrapkg/packages, tuatara,
+or your own fork. terra-hatch stops when `--root` holds no category
+folders.
 
 ## What it does
 

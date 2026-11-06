@@ -18,11 +18,18 @@ pip install .
 ## Use
 
 ```sh
-terra-hatch https://github.com/azat/chdig --category apps   # フォルダ選び
-terra-hatch owner/repo --nightly                            # commit 追跡
-terra-hatch owner/repo --dry-run                            # 書く前に見る
-terra-hatch owner/repo --no-spec-tools                      # pyp2spec / go2rpm を使わない
+cd <your packages repo>   # anda/ の category フォルダがある場所
+terra-hatch https://github.com/azat/chdig                     # フォルダは実行時に対話で選ぶ
+echo apps | terra-hatch owner/repo                            # 対話をパイプで代用もできる
+terra-hatch owner/repo --nightly                              # commit 追跡
+terra-hatch owner/repo --dry-run                              # 書く前に見る
+terra-hatch owner/repo --no-spec-tools                        # pyp2spec / go2rpm を使わない
 ```
+
+フォルダの選択肢は `--root` (規定 `anda`) の下を実際に走査して集めます。
+なので packages repo の種類 (terrapkg/packages でも tuatara でも) に
+よらず、手元のフォルダ構成がそのまま出ます。`--root` の下に category
+フォルダがないときは実行を止めます。
 
 ## 内容
 
