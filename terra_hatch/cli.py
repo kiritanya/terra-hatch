@@ -173,6 +173,43 @@ def insert_packager(text, packager):
                   text, count=1, flags=re.MULTILINE)
 
 
+CARGO_TREE_FLAGS = ["--workspace", "--edges", "no-build,no-dev,no-proc-macro",
+                    "--no-dedupe", "--target", "all", "--prefix", "none",
+                    "--format", "{l}"]
+
+
+def cargo_license_expression(clone_dir, timeout=600):
+    """Aggregate License: value for a Rust package, built the same way
+    as the `%cargo_license_preamble_online` macro in anda-srpm-macros:
+    cargo tree over the dependency graph, `X / Y` collapsed to `X OR Y`,
+    multi-license entries parenthesized, all sorted and AND-joined.
+    Returns None when cargo is missing or the fetch fails — no licence is
+    ever made up."""
+    cargo = shutil.which("cargo")
+    if not cargo or not clone_dir:
+        return None
+    try:
+        result = subprocess.run([cargo, "tree", *CARGO_TREE_FLAGS],
+                                cwd=clone_dir, capture_output=True,
+                                text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as err:
+        warn(f"cargo tree failed ({err}); License: stays the top-level value.")
+        return None
+    if result.returncode != 0:
+        warn("cargo tree failed; License: stays the top-level value.\n"
+             + (result.stderr or "").strip().splitlines()[-1:])
+        return None
+    entries = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        collapsed = re.sub(r"\s*/\s*", " OR ", line)
+        entries.append(f"({collapsed})" if " " in collapsed else collapsed)
+    expression = " AND ".join(sorted(set(entries)))
+    return expression or None
+
+
 def terraify_spec(text, packager):
     """Small edits the Terra policies require but the Fedora spec tools
     (pyp2spec / go2rpm) do not make: the `Packager:` tag and a manual
@@ -545,6 +582,13 @@ def review_checklist(source, ctx, args):
         tips.append(f"`License:` is a TODO ({hint}) — set the correct SPDX id.")
     elif ctx["license_from_registry"]:
         tips.append("`License:` came from the forge/registry — check that it is right.")
+    if ctx.get("license_aggregated"):
+        tips.append("`License:` is the crate+dependency aggregation from `cargo tree` — "
+                    "check it against the licenses the mock build prints "
+                    "(%cargo_license_summary_online at build time).")
+    elif lang == "rust" and args.license is None and not shutil.which("cargo"):
+        tips.append("Rust: `dnf install cargo` (or run on Fedora) lets terra-hatch "
+                    "fill the aggregated dependency-tree `License:` for you.")
     if not ctx["packager"]:
         tips.append("`Packager:` — put your own name and email here.")
     if ctx["source_url"] is None and not ctx.get("by_spec_tool"):
@@ -639,6 +683,18 @@ def main(argv=None):
             if license_from_registry:
                 log(f"License auto-detected: {license_value}")
         license_value = license_value or "TODO"
+
+        # Rust binaries need the whole dependency-tree license in `License:`
+        # (srpm-macros' %cargo_license_preamble_online shape). Build it from
+        # the actual graph when cargo is available; never invent it.
+        license_aggregated = False
+        if lang == "rust" and args.license is None:
+            aggregate = cargo_license_expression(clone_dir)
+            if aggregate:
+                license_value = aggregate
+                license_aggregated = True
+                log("License: built from the cargo dependency tree")
+
         summary = args.summary or source.get("description") or "TODO summary"
         description = source.get("description") or summary
         packager = args.packager or guess_packager(git_bin) or "TODO Your Name <you@example.com>"
@@ -664,6 +720,7 @@ def main(argv=None):
             "source_url": source_url,
             "license": license_value,
             "license_from_registry": license_from_registry,
+            "license_aggregated": license_aggregated,
             "summary": summary,
             "description": description,
             "packager": packager,
