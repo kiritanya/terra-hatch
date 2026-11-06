@@ -34,6 +34,11 @@ EXTRAS = {
     "python": python.extras,
 }
 
+# per-language license aggregation hooks: fn(sources dir) -> SPDX expression
+LICENSE_HOOKS = {
+    "rust": rust.license_expression,
+}
+
 # per-language review reminder text; languages without tips are absent
 LANG_TIPS = {
     "go": go.TIPS,

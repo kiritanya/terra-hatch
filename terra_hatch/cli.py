@@ -9,6 +9,7 @@ holds the forge helpers and the main flow.
 import argparse
 import http.client
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -22,7 +23,8 @@ from pathlib import Path
 from jinja2 import Environment, PackageLoader, StrictUndefined
 
 from . import HTTP_UA, NAME, __version__
-from .languages import EXTRAS, LANGUAGES, LANG_TIPS, REGISTRY_APIS, sniff_repository
+from .languages import (EXTRAS, LANGUAGES, LANG_TIPS, LICENSE_HOOKS,
+                        REGISTRY_APIS, sniff_repository)
 from .log import die, log, warn
 
 # suggested folder per detected language (used only when present in the
@@ -56,7 +58,11 @@ FORGE_COMMIT_CALLS = {
 def fetch_json(url):
     """Get a JSON URL. Returns None on any error (offline, 404, ...)."""
     try:
-        request = urllib.request.Request(url, headers={"User-Agent": HTTP_UA})
+        headers = {"User-Agent": HTTP_UA}
+        token = os.environ.get("GITHUB_TOKEN")
+        if token and "api.github.com" in url:
+            headers["Authorization"] = f"Bearer {token}"
+        request = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(request, timeout=15) as response:
             return json.load(response)
     except (urllib.error.URLError, urllib.error.HTTPError, http.client.HTTPException,
@@ -171,43 +177,6 @@ def insert_packager(text, packager):
     return re.sub(r"^(License: .*)$",
                   lambda m: m.group(1) + "\nPackager:       " + packager,
                   text, count=1, flags=re.MULTILINE)
-
-
-CARGO_TREE_FLAGS = ["--workspace", "--edges", "no-build,no-dev,no-proc-macro",
-                    "--no-dedupe", "--target", "all", "--prefix", "none",
-                    "--format", "{l}"]
-
-
-def cargo_license_expression(clone_dir, timeout=600):
-    """Aggregate License: value for a Rust package, built the same way
-    as the `%cargo_license_preamble_online` macro in anda-srpm-macros:
-    cargo tree over the dependency graph, `X / Y` collapsed to `X OR Y`,
-    multi-license entries parenthesized, all sorted and AND-joined.
-    Returns None when cargo is missing or the fetch fails — no licence is
-    ever made up."""
-    cargo = shutil.which("cargo")
-    if not cargo or not clone_dir:
-        return None
-    try:
-        result = subprocess.run([cargo, "tree", *CARGO_TREE_FLAGS],
-                                cwd=clone_dir, capture_output=True,
-                                text=True, timeout=timeout)
-    except (OSError, subprocess.TimeoutExpired) as err:
-        warn(f"cargo tree failed ({err}); License: stays the top-level value.")
-        return None
-    if result.returncode != 0:
-        warn("cargo tree failed; License: stays the top-level value.\n"
-             + (result.stderr or "").strip().splitlines()[-1:])
-        return None
-    entries = []
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        collapsed = re.sub(r"\s*/\s*", " OR ", line)
-        entries.append(f"({collapsed})" if " " in collapsed else collapsed)
-    expression = " AND ".join(sorted(set(entries)))
-    return expression or None
 
 
 def terraify_spec(text, packager):
@@ -685,11 +654,12 @@ def main(argv=None):
         license_value = license_value or "TODO"
 
         # Rust binaries need the whole dependency-tree license in `License:`
-        # (srpm-macros' %cargo_license_preamble_online shape). Build it from
-        # the actual graph when cargo is available; never invent it.
+        # (srpm-macros' %cargo_license_preamble_online shape). The language
+        # hook builds it from the actual graph; never invents it.
         license_aggregated = False
-        if lang == "rust" and args.license is None:
-            aggregate = cargo_license_expression(clone_dir)
+        hook = LICENSE_HOOKS.get(lang)
+        if hook and args.license is None:
+            aggregate = hook(clone_dir)
             if aggregate:
                 license_value = aggregate
                 license_aggregated = True

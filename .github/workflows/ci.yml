@@ -8,6 +8,8 @@ on:
 jobs:
   smoke:
     runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     strategy:
       matrix:
         python-version: ["3.11", "3.14"]
